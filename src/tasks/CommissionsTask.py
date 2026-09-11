@@ -7,6 +7,7 @@ from functools import cached_property
 
 from ok import find_boxes_by_name, TaskDisabledException
 from src.tasks.BaseDNATask import BaseDNATask, isolate_white_text_to_black, color_filter
+from src.ui.Defs import Ui, COORD
 from src.tasks.config.CommissionConfig import (
     CommissionConfig,
     LETTER_HANDLE_AUTO_SELECT_FIRST,
@@ -53,18 +54,6 @@ class CommissionsTask(BaseDNATask):
             return mode
         return LETTER_HANDLE_AUTO_SELECT_FIRST
 
-    def _letter_reward_confirm_box(self, name="letter_reward_confirm"):
-        return self.box_of_screen_scaled(
-            1600,
-            900,
-            666,
-            720,
-            666 + 275,
-            720 + 53,
-            name=name,
-            hcenter=True,
-        )
-
     def setup_commission_config(self):
         self.default_config.update({
             "轮次": 5,
@@ -75,44 +64,42 @@ class CommissionsTask(BaseDNATask):
             "超时时间": "超时后将重启任务",
         })
 
-    def find_ingame_quit_btn(self, threshold=0, box=None):
-        if box is None:
-            box = self.box_of_screen_scaled(2560, 1440, 729, 960, 854, 1025, name="quit_mission", hcenter=True)
-        return self.find_one("ingame_quit_icon", threshold=threshold, box=box)
+    # ------------------------------------------------------------------
+    # 界面判据（唯一出处 src/ui/Defs.py）
+    #   命名规则：find_<界面>_<元素>；判据命中 == 当前在这个界面上
+    # ------------------------------------------------------------------
+    def find_action_dialog_retreat(self, threshold=0):
+        """行动抉择弹窗的「撤离」（原 find_ingame_quit_btn）。"""
+        return self.find_ui(Ui.ACTION_DIALOG_RETREAT, threshold=threshold)
 
-    def find_ingame_continue_btn(self, threshold=0, box=None):
-        if box is None:
-            box = self.box_of_screen(0.610, 0.671, 0.647, 0.714, name="continue_mission", hcenter=True)
-        return self.find_one("ingame_continue_icon", threshold=threshold, box=box)
+    def find_action_dialog_continue(self, threshold=0):
+        """行动抉择弹窗的「继续挑战」（原 find_ingame_continue_btn）。"""
+        return self.find_ui(Ui.ACTION_DIALOG_CONTINUE, threshold=threshold)
 
-    def find_bottom_start_btn(self, threshold=0):
-        return self.find_start_btn(
-            threshold=threshold, box=self.box_of_screen_scaled(2560, 1440, 2094, 1262, 2153, 1328, name="start_mission",
-                                                               hcenter=True))
+    def find_start_btn(self, threshold=0, box=None, template=None):
+        """开始界面的「开始」按钮（新版只有一个位置，不再分 bottom/big）。"""
+        return self.find_ui(Ui.START_SCREEN_START, threshold=threshold, box=box, template=template)
 
-    def find_big_bottom_start_btn(self, threshold=0):
-        return self.find_start_btn(
-            threshold=threshold, box=self.box_of_screen_scaled(2560, 1440, 1667, 1259, 1728, 1328, name="start_mission",
-                                                               hcenter=True))
+    def find_manual_select_btn(self, threshold=0):
+        """委托手册弹窗（用 ⊘ 不使用当判据）。"""
+        return self.find_ui(Ui.MANUAL_SELECT_NOT_USE, threshold=threshold)
 
     def find_letter_btn(self, threshold=0):
-        return self.find_space_btn(
-            threshold=threshold, box=self.box_of_screen_scaled(3840, 2160, 1920, 1338, width_original=1457 ,height_original=130, name="letter_btn",
-                                                               hcenter=True))
+        """密函选择弹窗（局外版）。"""
+        return self.find_ui(Ui.LETTER_SELECT_ABANDON, threshold=threshold)
+
+    def find_letter_ingame_btn(self, threshold=0):
+        """密函选择弹窗（局内继续轮次版，布局不同）。"""
+        return self.find_ui(Ui.LETTER_SELECT_INGAME_CONFIRM, threshold=threshold)
 
     def find_letter_reward_btn(self, threshold=0):
-        return self.find_start_btn(
-            threshold=threshold,
-            box=self._letter_reward_confirm_box(name="letter_reward_btn"),
-        )
-
-    def find_drop_rate_btn(self, threshold=0):
-        return self.find_space_btn(
-            threshold=threshold, box=self.box_of_screen_scaled(3840, 2160, 1438, 1353, width_original=1077 ,height_original=143, name="drop_rate_btn",
-                                                               hcenter=True))
+        """密函奖励弹窗。"""
+        return self.find_ui(Ui.LETTER_REWARD_CONFIRM, threshold=threshold)
 
     def find_esc_menu(self, threshold=0):
-        return self.find_one("quit_big_icon", threshold=threshold)
+        """局内 ESC 菜单（用「设置」齿轮当判据）。"""
+        return self.find_ui(Ui.ESC_MENU_SETTINGS, threshold=threshold)
+
 
     def open_in_mission_menu(self, time_out=20, raise_if_not_found=True):
         if self.find_esc_menu():
@@ -131,71 +118,38 @@ class CommissionsTask(BaseDNATask):
         return found
 
     def start_mission(self, timeout=0):
+        """点「开始」（判据：开始界面的 ◯），然后等进入下一步（手册弹窗或密函弹窗）。"""
         action_timeout = self.action_timeout if timeout == 0 else timeout
         box = self.box_of_screen_scaled(2560, 1440, 69, 969, 2498, 1331, name="reward_drag_area", hcenter=True)
-        start_time = time.time()
-        deadline = start_time + action_timeout
-        max_retry_press_count = 5
-        retry_click_box = self.box_of_screen_scaled(
-            3840,
-            2160,
-            2555,
-            1880,
-            2555 + 430,
-            1880 + 47,
-            name="retry_click_area",
-            hcenter=True,
-        )
-        retry_press_count = 0
-        retry_seen = False
-        retry_stall_deadline = None
+        deadline = time.time() + action_timeout
+        clicked = False
 
         while time.time() < deadline:
-            if self.find_retry_btn():
-                self.sleep(1)
-                retry_seen = True
-                if retry_press_count < max_retry_press_count:
-                    retry_press_count += 1
-                    if retry_stall_deadline is None:
-                        retry_stall_deadline = time.time() + 15
-                        deadline = max(deadline, retry_stall_deadline)
-                    self.click_box_random(
-                        retry_click_box,
-                        down_time=0.02,
-                        after_sleep=0.5,
-                        use_safe_move=True,
-                        safe_move_box=box,
-                    )
-            elif (btn := self.find_bottom_start_btn() or self.find_big_bottom_start_btn()):
-                self.click_btn_random(btn, safe_move_box=box, after_sleep=0.2)
+            if self.find_start_btn():
+                # 点检测到的按钮本身（不再用写死坐标）
+                self.click_ui_coord(COORD.START_SCREEN_BTN, name="start_mission",
+                                    after_sleep=0.2, use_safe_move=True, safe_move_box=box)
+                clicked = True
+            elif self.find_manual_select_btn() or self.find_letter_interface():
+                return              # 已经进入下一步
+            else:
+                self.next_frame()
+                continue
 
-            if self.wait_until(condition=lambda: self.find_drop_rate_btn() or self.find_letter_interface(), time_out=1):
-                break
+            if self.wait_until(condition=lambda: self.find_manual_select_btn() or self.find_letter_interface(),
+                               time_out=2):
+                return
 
-            # 云游戏/浏览器环境下颜色采样不稳定：不再依赖按钮颜色判断“不可继续”。
-            # 仅当检测到 retry_btn 但未进入后续界面时，最多按 max_retry_press_count 次 R，并在首按后等待 15 秒仍无变化才判定为“任务无法继续”。
-            if (
-                retry_seen
-                and retry_press_count >= max_retry_press_count
-                and retry_stall_deadline is not None
-                and time.time() >= retry_stall_deadline
-            ):
-                self.soundBeep()
-                self.log_info_notify("任务无法继续")
-                raise TaskDisabledException
-        else:
-            if retry_seen:
-                self.soundBeep()
-                self.log_info_notify("任务无法继续")
-                raise TaskDisabledException
-            raise Exception("等待开始任务超时")
+        if clicked:
+            raise Exception("点击开始后未进入委托手册/密函界面")
+        raise Exception("等待开始任务超时")
 
     def quit_mission(self, timeout=0):
         action_timeout = self.action_timeout if timeout == 0 else timeout
-        quit_btn = self.wait_until(self.find_ingame_quit_btn, time_out=action_timeout, raise_if_not_found=True)
+        self.wait_until(self.find_action_dialog_retreat, time_out=action_timeout, raise_if_not_found=True)
         self.wait_until(
-            condition=lambda: not self.find_ingame_quit_btn(),
-            post_action=lambda: self.click_box_random(quit_btn, right_extend=0.1, post_sleep=0, after_sleep=0.25),
+            condition=lambda: not self.find_action_dialog_retreat(),
+            post_action=lambda: self.click_ui_coord(COORD.ACTION_RETREAT, name="quit_mission", after_sleep=0.25),
             time_out=action_timeout,
             raise_if_not_found=True,
         )
@@ -204,26 +158,19 @@ class CommissionsTask(BaseDNATask):
 
     def give_up_mission(self, timeout=0):
         def is_mission_start_iface():
-            return self.find_retry_btn() or self.find_bottom_start_btn() or self.find_big_bottom_start_btn() or self.find_ingame_continue_btn() or self.find_esc_menu()
+            return self.find_start_btn() or self.find_action_dialog_continue() or self.find_esc_menu()
 
         action_timeout = self.action_timeout if timeout == 0 else timeout
-        box = self.box_of_screen_scaled(2560, 1440, 1301, 776, 1365, 841, name="give_up_mission", hcenter=True)
 
         if self.open_in_mission_menu(time_out=10, raise_if_not_found=False):
+            # ESC 菜单里「放弃挑战」-> 再确认一次
             self.wait_until(
-                condition=lambda: self.find_start_btn(box=box),
-                post_action=lambda: self.click_relative_random(0.885, 0.875, 0.965, 0.954, after_sleep=0.25),
+                condition=lambda: not self.find_esc_menu(),
+                post_action=lambda: self.click_ui_coord(COORD.ESC_GIVEUP, name="esc_giveup", after_sleep=0.25),
                 time_out=action_timeout,
                 raise_if_not_found=True,
             )
             self.sleep(0.5)
-            btn = self.find_start_btn(box=box)
-            self.wait_until(
-                condition=lambda: not self.find_start_btn(box=box),
-                post_action=lambda: self.click_btn_random(btn, after_sleep=0.25),
-                time_out=action_timeout,
-                raise_if_not_found=True,
-            )
 
         self.wait_until(condition=is_mission_start_iface, time_out=60, raise_if_not_found=False)
 
@@ -231,11 +178,9 @@ class CommissionsTask(BaseDNATask):
         if self.in_team():
             return False
         action_timeout = self.action_timeout if timeout == 0 else timeout
-        # continue_btn = self.wait_until(self.find_ingame_continue_btn, time_out=action_timeout, raise_if_not_found=True)
-        # left_extend = -continue_btn.width / self.width
         self.wait_until(
-            condition=lambda: not self.find_ingame_continue_btn() and not self.find_ingame_quit_btn(),
-            post_action=lambda: self.click_relative_random(0.647, 0.683, 0.696, 0.704, after_sleep=0.25),
+            condition=lambda: not self.find_action_dialog_continue() and not self.find_action_dialog_retreat(),
+            post_action=lambda: self.click_ui_coord(COORD.ACTION_CONTINUE, name="continue_mission", after_sleep=0.25),
             time_out=action_timeout,
             raise_if_not_found=True,
         )
@@ -243,15 +188,17 @@ class CommissionsTask(BaseDNATask):
         return True
 
     def choose_drop_rate(self, timeout=0):
-        def click_drop_rate_btn():
-            if (box:=self.find_drop_rate_btn()):
-                self.click_btn_random(box, after_sleep=0.25)
+        """选委托手册：先按配置点格子，再点「开始挑战」/「确认选择」直到弹窗关闭。"""
+        def click_confirm():
+            if self.find_manual_select_btn():
+                self.click_ui_coord(COORD.MANUAL_CONFIRM, name="manual_confirm", after_sleep=0.25)
+
         action_timeout = self.action_timeout if timeout == 0 else timeout
         self.sleep(0.5)
         self.choose_drop_rate_item()
         self.wait_until(
-            condition=lambda: not self.find_drop_item() and not self.find_drop_item(800),
-            post_action=click_drop_rate_btn,
+            condition=lambda: not self.find_manual_select_btn(),
+            post_action=click_confirm,
             time_out=action_timeout,
             raise_if_not_found=True,
         )
@@ -269,14 +216,9 @@ class CommissionsTask(BaseDNATask):
                     return
             elif self.current_round == 0 or (self.current_round + 1) not in round_to_use:
                 return
-        if drop_rate == "100%":
-            self.click_relative_random(0.373, 0.514, 0.440, 0.580)
-        elif drop_rate == "200%":
-            self.click_relative_random(0.466, 0.514, 0.535, 0.580)
-        elif drop_rate == "800%":
-            self.click_relative_random(0.560, 0.514, 0.627, 0.580)
-        elif drop_rate == "2000%":
-            self.click_relative_random(0.653, 0.514, 0.722, 0.580)
+        coord = COORD.MANUAL_ITEM.get(drop_rate)
+        if coord is not None:
+            self.click_ui_coord(coord, name="manual_%s" % drop_rate)
         self.log_info(f"使用委托手册: {drop_rate}")
         self.sleep(0.25)
 
@@ -300,11 +242,9 @@ class CommissionsTask(BaseDNATask):
                 not_use_edge = self.box_of_screen(0.4443, 0.3630, 0.4526, 0.4991, name="not_use_edge", hcenter=True)
                 self.sleep(0.1)
                 for _ in range(2):
-                    self.click_relative_random(
-                        0.5120,
-                        0.3815,
-                        0.5531,
-                        0.4667,
+                    self.click_ui_coord(
+                        COORD.MANUAL_NOT_USE,
+                        name="letter_not_use",
                         use_safe_move=True,
                         safe_move_box=box,
                         down_time=0.02,
@@ -333,7 +273,8 @@ class CommissionsTask(BaseDNATask):
 
             self.wait_until(
                 condition=lambda: not self.find_letter_interface(),
-                post_action=lambda: self.click_btn_random(letter_btn, after_sleep=1, safe_move_box=box),
+                post_action=lambda: self.click_ui_coord(COORD.LETTER_CONFIRM, name="letter_confirm",
+                                                        after_sleep=1, use_safe_move=True, safe_move_box=box),
                 time_out=action_timeout,
                 raise_if_not_found=True,
             )
@@ -399,7 +340,11 @@ class CommissionsTask(BaseDNATask):
 
         if target_item:
             self.log_info(f"策略[{strategy}] -> 选择第 {target_item['index']} 个奖励，持有数: {target_item['count']}")
-            self.click_box_random(target_item['reward_obj'], left_extend=0.015, right_extend=0.015, up_extend=0.03, down_extend=0.03, down_time=0.02, after_sleep=0.5)
+            # 奖励卡内容是随机的 -> 不建 label，按固定坐标点第 index 张
+            card = (COORD.LETTER_REWARD_CARD_1, COORD.LETTER_REWARD_CARD_2,
+                    COORD.LETTER_REWARD_CARD_3)[target_item['index'] - 1]
+            self.click_ui_coord(card, name="reward_card_%d" % target_item['index'],
+                                down_time=0.02, after_sleep=0.5)
 
     def choose_letter_reward(self, timeout=0):
         action_timeout = self.action_timeout if timeout == 0 else timeout
@@ -415,10 +360,11 @@ class CommissionsTask(BaseDNATask):
         else:
             if reward_strategy in (LETTER_REWARD_COUNT_ZERO, LETTER_REWARD_COUNT_MIN, LETTER_REWARD_COUNT_MAX):
                 self.choose_target_letter_reward()
-            confirm_click_box = self._letter_reward_confirm_box()
             self.wait_until(
                 condition=lambda: not self.find_letter_reward_btn(),
-                post_action=lambda: self.click_box_random(confirm_click_box, down_time=0.02, after_sleep=0.25),
+                post_action=lambda: self.click_ui_coord(COORD.LETTER_REWARD_CONFIRM,
+                                                        name="letter_reward_confirm",
+                                                        down_time=0.02, after_sleep=0.25),
                 time_out=action_timeout,
                 raise_if_not_found=True,
             )
@@ -530,31 +476,39 @@ class CommissionsTask(BaseDNATask):
             self.sleep(0.2)
 
     def handle_mission_interface(self, stop_func=lambda: False):
+        """每步操作后重新看画面：匹配到哪个元素，就执行哪一段逻辑。
+
+        骨架保持原有优先级顺序（见《素材重构文档/重构方案-代码篇.md》§1.2）；
+        这里只把"识别机制"换成界面判据、把"坐标来源"换成 Defs。
+        """
         if self.in_team():
             return False
 
         self.check_for_monthly_card()
 
+        # 优先级 1：密函奖励（只在奖励弹窗出现时有意义）
         if self.find_letter_reward_btn():
             self.log_info("处理任务界面: 选择密函奖励")
             self.choose_letter_reward()
             return
 
+        # 优先级 2：密函选择 / 委托手册
         if self.find_letter_interface():
             self.log_info("处理任务界面: 选择密函")
             self.choose_letter()
             return self.get_return_status()
-        elif self.find_drop_item() or self.find_drop_item(800):
+        elif self.find_manual_select_btn():
             self.log_info("处理任务界面: 选择委托手册")
             self.choose_drop_rate()
             return self.get_return_status()
 
-        if self.find_retry_btn() or self.find_bottom_start_btn() or self.find_big_bottom_start_btn():
+        # 优先级 3：开始 / 继续 / 放弃
+        if self.find_start_btn():
             self.log_info("处理任务界面: 开始任务")
             self.start_mission()
             self.mission_status = Mission.START
             return
-        elif self.find_ingame_continue_btn() or self.find_ingame_quit_btn():
+        elif self.find_action_dialog_continue() or self.find_action_dialog_retreat():
             if stop_func():
                 self.log_info("处理任务界面: 终止任务")
                 return Mission.STOP
@@ -573,23 +527,13 @@ class CommissionsTask(BaseDNATask):
         self.mission_status = None
         return ret
 
-    def find_next_hint(self, x1, y1, x2, y2, s, box_name="hint_text"):
-        texts = self.ocr(
-            box=self.box_of_screen(x1, y1, x2, y2, hcenter=True),
-            target_height=540,
-            name=box_name,
-        )
-        target_text = find_boxes_by_name(texts, re.compile(s, re.IGNORECASE))
-        if target_text:
-            return True
-
     def reset_and_transport(self):
         # 1) 打开局内菜单(ESC 菜单)
         self.open_in_mission_menu()
         self.wait_until(
             condition=lambda: not self.find_esc_menu(),
-            # 2) 点击"设置"入口(局内菜单右下区域), 点击后应关闭 ESC 菜单
-            post_action=lambda: self.click_relative_random(0.688, 0.875, 0.770, 0.956),
+            # 2) 点击"设置"入口, 点击后应关闭 ESC 菜单
+            post_action=lambda: self.click_ui_coord(COORD.ESC_SETTINGS, name="esc_settings"),
             time_out=10,
         )
         setting_box = self.box_of_screen_scaled(2560, 1440, 738, 4, 1123, 79, name="other_section", hcenter=True)
@@ -604,30 +548,24 @@ class CommissionsTask(BaseDNATask):
             time_out=10,
         )
         self.sleep(0.5)
-        confirm_box = self.box_of_screen_scaled(2560, 1440, 1298, 776, 1368, 843, name="confirm_btn", hcenter=True)
         safe_box = self.box_of_screen_scaled(2560, 1440, 125, 207, 1811, 1234, name="safe_box", hcenter=True)
-        self.wait_until(
-            condition=lambda: self.find_start_btn(box=confirm_box),
-            # 4) 点击“重置角色/复位并传送”按钮(弹框确认按钮出现后点击). safe_box 用于前台/非前台时的鼠标安全移动
-            post_action=lambda: self.click_relative_random(0.51, 0.5866667, 0.66875, 0.6188889, after_sleep=0.5, use_safe_move=True, safe_move_box=safe_box),
-            time_out=10,
-        )
+        # 4) 点“重置角色/复位并传送”
+        #    NOTE: 这个二次确认弹窗本轮没截到图，暂时沿用原来的相对坐标（见《标注方案》§8 待补）。
+        self.click_ui_coord(COORD.RESET_TRANSPORT_CONFIRM, name="reset_transport",
+                            after_sleep=0.5, use_safe_move=True, safe_move_box=safe_box)
         self.sleep(0.5)
-        safe_box = self.box_of_screen_scaled(2560, 1440, 1298, 772, 1735, 846, name="safe_box", hcenter=True)
-        self.wait_until(
-            condition=lambda: not self.find_start_btn(box=confirm_box),
-            # 5) 点击确认弹框的“确认/确定”(确认按钮消失前后切换, 用于保证弹框完成与关闭)
-            post_action=lambda: self.click_relative_random(0.531, 0.547, 0.671, 0.578, after_sleep=0.5, use_safe_move=True, safe_move_box=safe_box),
-            time_out=10,
-        )
+        safe_box2 = self.box_of_screen_scaled(2560, 1440, 1298, 772, 1735, 846, name="safe_box", hcenter=True)
+        # 5) 点二次确认弹框的“确认”（同上，待补截图后换成判据）
+        self.click_ui_coord(COORD.RESET_TRANSPORT_OK, name="reset_transport_ok",
+                            after_sleep=0.5, use_safe_move=True, safe_move_box=safe_box2)
         if not self.wait_until(self.in_team, time_out=10):
             self.ensure_main()
             return False
         return True
 
     def find_letter_interface(self):
-        box = self.find_letter_btn() or self.find_not_use_letter_icon()
-        return box
+        """密函选择弹窗（局外版或局内版都算）。"""
+        return self.find_letter_btn() or self.find_letter_ingame_btn()
 
 
 class QuickAssistTask:

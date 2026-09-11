@@ -16,6 +16,8 @@ from ok import BaseTask, Box, Logger, color_range_to_bound, og
 from ok.device.intercation import GenshinInteraction, PyDirectInteraction
 from ok.util.process import run_in_new_thread
 
+from src.ui.Defs import DISCRIMINATORS, REF_WIDTH, REF_HEIGHT, Ui, COORD
+
 logger = Logger.get_logger(__name__)
 f_black_color = {
     'r': (0, 20),  # Red range
@@ -193,49 +195,68 @@ class BaseDNATask(BaseTask):
         if esc:
             self.back(after_sleep=1.5)
 
-    def find_start_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        return self.find_one('start_icon', threshold=threshold, box=box, template=template)
+    # ------------------------------------------------------------------
+    # 界面判据 / 坐标点击（唯一出处：src/ui/Defs.py）
+    # ------------------------------------------------------------------
+    def find_ui(self, label: str, threshold: float = 0, box: Box | None = None,
+                template=None) -> Box | None:
+        """找一个界面判据元素。
 
-    def find_cancel_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
+        `label` 取自 `src.ui.Defs.Ui`；搜索范围取自 `src.ui.Defs.DISCRIMINATORS`，
+        所以调用方不需要知道任何坐标。
+        """
+        if box is None:
+            spec = DISCRIMINATORS.get(label)
+            if spec is not None:
+                search = spec[0]
+                box = self.box_of_screen_scaled(REF_WIDTH, REF_HEIGHT,
+                                                search[0], search[1], search[2], search[3],
+                                                name=label, hcenter=True)
         if isinstance(box, Box):
             self.draw_boxes(box.name, box, "blue")
-        return self.find_one('cancel_icon', threshold=threshold, box=box, template=template)
-    
-    def find_space_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        return self.find_one('space_icon', threshold=threshold, box=box, template=template)
-    
-    def find_esc_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        return self.find_one('esc_icon', threshold=threshold, box=box, template=template)
+        return self.find_one(label, threshold=threshold, box=box, template=template)
 
-    def find_retry_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        return self.find_one('retry_icon', threshold=threshold, box=box, template=template)
+    def ui_exists(self, label: str, threshold: float = 0) -> bool:
+        return self.find_ui(label, threshold=threshold) is not None
 
-    def find_quit_btn(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        return self.find_one('quit_icon', threshold=threshold, box=box, template=template)
+    def detect_screens(self, exclude_ingame: bool = True):
+        """返回当前画面上命中的**判据界面名**集合。
 
-    def find_drop_item(self, rates=2000, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        else:
-            box = self.box_of_screen(0.381, 0.406, 0.713, 0.483, name="drop_rate_item", hcenter=True)
-        return self.find_one(f'drop_item_{str(rates)}', threshold=threshold, box=box, template=template)
+        注意：这里**不给场景贴唯一标签**。一张截图可能同时命中多个元素
+        （例如弹窗盖在开始界面上），调用方按自己的优先级挑选即可 ——
+        这正是原骨架的灵活性所在。
+        """
+        if exclude_ingame and self.in_team():
+            return set()
+        found = set()
+        for label, (search, iface, _note) in DISCRIMINATORS.items():
+            if self.find_ui(label):
+                found.add(iface)
+        return found
 
-    def find_not_use_letter_icon(self, threshold: float = 0, box: Box | None = None, template=None) -> Box | None:
-        if isinstance(box, Box):
-            self.draw_boxes(box.name, box, "blue")
-        else:
-            box = self.box_of_screen(0.4552, 0.3954, 0.4927, 0.4948, name="not_use_letter", hcenter=True)
-        return self.find_one('not_use_letter', threshold=threshold, box=box, template=template)
+    def on_screen(self, iface: str, threshold: float = 0) -> bool:
+        """当前是否在某个判据界面上（`iface` 取自 DISCRIMINATORS 的第二项）。"""
+        for label, (search, name, _note) in DISCRIMINATORS.items():
+            if name == iface:
+                if self.find_ui(label, threshold=threshold):
+                    return True
+        return False
+
+    def click_ui_coord(self, coord, name: str = None, after_sleep: float = 0, down_time: float = 0.02,
+                       use_safe_move: bool = False, safe_move_box=None) -> None:
+        """按 1600x900 基准坐标点一下（坐标出自 `src.ui.Defs.COORD`）。"""
+        x, y = coord
+        box = self.box_of_screen_scaled(REF_WIDTH, REF_HEIGHT, x, y, x + 1, y + 1,
+                                        name=name or ('ui_%d_%d' % (x, y)), hcenter=True,
+                                        vcenter=True)
+        self.click_box_random(box, after_sleep=after_sleep, down_time=down_time,
+                              use_safe_move=use_safe_move, safe_move_box=safe_move_box)
+
+    # 说明：原 find_cancel_btn / find_space_btn / find_esc_btn / find_retry_btn /
+    # find_quit_btn / find_drop_item / find_not_use_letter_icon 已删除。
+    #   它们对应的 label（cancel_icon / space_icon / esc_icon / retry_icon /
+    #   quit_icon / drop_item_* / not_use_letter）在新版 UI 里已不存在或被
+    #   界面判据取代（详见《素材重构文档/重构方案-代码篇.md》§4）。
 
     def safe_get(self, key, default=None):
         if hasattr(self, key):
